@@ -4,8 +4,15 @@ class Satellites{
         this.url = url;
         this.getTLE().then(
             data => {
-                this.tle_data = data.split('\n');
-                console.log(this.tle_data);
+                let data_ = data.split('\n');
+                let newData = []
+                let i =0;
+                for(i = 0; i < data_.length-2 ; i+=3){
+                    if(data_[i].includes("DEB") || data_[i].includes("R/B")){
+                        newData.push([data_[i], data_[i+1], data_[i+2], true]);
+                    }
+                }
+                this.tle_data = newData;
             }
         );
         this.layer = null;
@@ -21,52 +28,60 @@ class Satellites{
         let res = await fetch(this.getFreeUrl(this.url));
         return res.text();
     }
-
+    getSatts(){
+        return this.tle_data;
+    }
     //update openlayers map
     async updateMap(){
         if(this.tle_data != undefined){
             if (this.layer != null){
                 let i=0;
                 let newC = [];
-                for(i = 0; i < this.tle_data.length-1 ; i+=2){
-                    let sat = satellite.twoline2satrec(this.tle_data[i].replace('\r', ''), this.tle_data[i+1].replace('\r', ''));
+                for(i = 0; i < this.tle_data.length ; i++){
+                    let sat = satellite.twoline2satrec(this.tle_data[i][1].replace('\r', ''), this.tle_data[i][2].replace('\r', ''));
                     
                     let posAndVel = satellite.propagate(sat, new Date());
+                    if(posAndVel[0]!=false){
+                        let gmst = satellite.gstime(new Date());
                     
-                    let gmst = satellite.gstime(new Date());
+                        let position = satellite.eciToGeodetic(posAndVel.position, gmst);
                     
-                    let position = satellite.eciToGeodetic(posAndVel.position, gmst);
-                    
-                    let lat = position.latitude;
-                    let lon = position.longitude;
+                        let lat = position.latitude;
+                        let lon = position.longitude;
 
-                    const rad2deg = 180 / Math.PI;
-                    while (lon < -Math.PI) {
-                        lon += 2 * Math.PI;
+                        const rad2deg = 180 / Math.PI;
+                        while (lon < -Math.PI) {
+                            lon += 2 * Math.PI;
+                        }
+                        while (lon > Math.PI) {
+                            lon -= 2 * Math.PI;
+                        }
+                        lat=rad2deg*lat;
+                        lon=rad2deg*lon;
+                        newC.push([lon, lat]);
                     }
-                    while (lon > Math.PI) {
-                        lon -= 2 * Math.PI;
-                    }
-                    lat=rad2deg*lat;
-                    lon=rad2deg*lon;
-                    newC.push([lon, lat]);
                 }
                 let modify = this.layer.getSource().getFeatures();
                 for(i = 0; i < newC.length ; i++){
                     modify[i].getGeometry().setCoordinates(ol.proj.fromLonLat(newC[i]));
+                    if(this.tle_data[i][3] && modify[i].getStyle()==null){
+                        modify[i].setStyle(getStyle('blue'));
+                    }else if(!this.tle_data[i][3] && modify[i].getStyle()!=null){
+                        console.log('a');
+                        modify[i].setStyle(null);
+                    }
                 }
             }else{
                 let features = []
-                let tle = [];
                 let i = 0;
-                for(i = 1; i < this.tle_data.length-2 ; i+=3){
-                    let sat = satellite.twoline2satrec(this.tle_data[i].replace('\r', ''), this.tle_data[i+1].replace('\r', ''));
+                for(i = 0; i < this.tle_data.length; i++){
+                    let sat = satellite.twoline2satrec(this.tle_data[i][1].replace('\r', ''), this.tle_data[i][2].replace('\r', ''));
                     
                     let posAndVel = satellite.propagate(sat, new Date());
                     if(posAndVel[0]!=false){
                     
-                        tle.push(this.tle_data[i].replace('\r', ''));
-                        tle.push(this.tle_data[i+1].replace('\r', ''));
+                        //tle.push(this.tle_data[i].replace('\r', ''));
+                        //tle.push(this.tle_data[i+1].replace('\r', ''));
 
                         let gmst = satellite.gstime(new Date());
                         
@@ -85,11 +100,14 @@ class Satellites{
                         lat=rad2deg*lat;
                         lon=rad2deg*lon;
                         
+                        let fet = new ol.Feature({
+                            geometry: new ol.geom.Point(ol.proj.fromLonLat([lon, lat]))
+                        });
+                        fet.setProperties({'SatName':this.tle_data[i][0]});
+
                         features.push(
-                            new ol.Feature({
-                                geometry: new ol.geom.Point(ol.proj.fromLonLat([lon, lat]))
-                            })
-                        )
+                            fet 
+                        );
                     }
                 }
               
@@ -97,19 +115,22 @@ class Satellites{
                     source: new ol.source.Vector({
                         features: features
                     }),
-                    style: new ol.style.Style({
-                        image: new ol.style.Circle({
-                            radius: 5,
-                            fill: new ol.style.Fill({color: 'red'}),
-                            stroke: false
-                        })
-                    })
+                    style: getStyle('blue')
                 });
                 map.addLayer(this.layer);
-                this.tle_data = tle;
             }
         }
     }
+}
+
+function getStyle(color){
+    return new ol.style.Style({
+        image: new ol.style.Circle({
+            radius:3,
+            fill: new ol.style.Fill({color: color}),
+            stroke: false
+        })
+    })
 }
 
 //openlayers map
@@ -117,42 +138,64 @@ let map = new ol.Map({
     target: 'map',
     layers: [
       new ol.layer.Tile({
-        source: new ol.source.OSM()
+        source: new ol.source.OSM({
+            imageSmoothing: false,
+            transition: 0,
+            wrapX: false,
+            maxZoom: 3
+        })
       })
     ],
     view: new ol.View({
       center: [0,0],
       zoom: 0,
-      maxZoom: 3
+      maxZoom: 5,
+      constrainResolution: true,
+      extent: new ol.View().getProjection().getExtent()
     })
   });
 
+var container = document.getElementById('popup');
+var content = document.getElementById('popup-content');
+var closer = document.getElementById('popup-closer');
+ 
+var overlay = new ol.Overlay({
+    element: container,
+    autoPan: true,
+    autoPanAnimation: {
+        duration: 250
+    }
+});
+map.addOverlay(overlay);
+closer.onclick = function() {
+    overlay.setPosition(undefined);
+    closer.blur();
+    return false;
+};
+map.on('singleclick', function (evt) {
+    if (map.hasFeatureAtPixel(evt.pixel) === true) {
+        fet = map.getFeaturesAtPixel(evt.pixel)[0];
+        //fet.setStyle(getStyle('red'));
+
+        const coordinate = evt.coordinate;
+        
+        content.innerHTML = `<p><b>Satellite name</b>: ${
+            map.getFeaturesAtPixel(evt.pixel)[0].get('SatName')
+        }`;
+        overlay.setPosition(coordinate);
+    }
+});
 //space debris tle fonts
-indianASAT_url = "https://celestrak.com/NORAD/elements/2019-006.txt";
-fengyun1C_url = "https://celestrak.com/NORAD/elements/1999-025.txt";
-iridium33_url = "https://celestrak.com/NORAD/elements/iridium-33-debris.txt";
-cosmos2251_url = "https://celestrak.com/NORAD/elements/cosmos-2251-debris.txt";
+celestrak_catalog = "https://celestrak.com/pub/TLE/catalog.txt";
 
-let sateliteCreatorIndian = new Satellites(cosmos2251_url);
-let sateliteCreatorFengyun = new Satellites(fengyun1C_url);
-//let sateliteCreatorIridium = Satellites();
-//let sateliteCreatorCosmos = Satellites();
-
-/*var ret = sateliteCreatorIndian.getTLE().then(
-    data => { console.log(data.split('\n'));}
-);*/
+let sateliteCreator = new Satellites(celestrak_catalog);
 
 function sleep (time) {
     return new Promise((resolve) => setTimeout(resolve, time));
 }
   
-sleep(100).then(() => {
+sleep(50).then(() => {
     setInterval(() => {
-       sateliteCreatorIndian.updateMap(); 
-    }, 10);
-});
-sleep(100).then(() => {
-    setInterval(() => {
-       sateliteCreatorFengyun.updateMap(); 
-    }, 10);
+        sateliteCreator.updateMap();
+    }, 1000);
 });
